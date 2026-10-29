@@ -1,0 +1,236 @@
+const KEY = "attendanceTrackerData";
+const state = JSON.parse(localStorage.getItem(KEY) || '{"students": [], "attendance": []}');
+const $ = id => document.getElementById(id);
+const today = new Date().toISOString().slice(0, 10);
+$("attendanceDate").value = today;
+let activeHistoryStudentId = null;
+
+function save() { 
+  localStorage.setItem(KEY, JSON.stringify(state)); 
+}
+
+function showMessage(text, isError = false) {
+  const msgEl = $("message"); 
+  msgEl.textContent = text; 
+  msgEl.className = isError ? "error" : "";
+}
+
+function escapeHTML(value) {
+  return String(value).replace(/[&<>"]/g, ch => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[ch]));
+}
+
+function saveStudent(originalId, studentId, name, department) {
+  studentId = studentId.trim(); 
+  name = name.trim(); 
+  department = department.trim();
+  if (!studentId || !name || !department) throw new Error("All student fields are required.");
+  
+  if (originalId) {
+    if (originalId !== studentId && state.students.some(s => s.studentId.toLowerCase() === studentId.toLowerCase())) {
+      throw new Error("New Student ID already exists.");
+    }
+    const student = state.students.find(s => s.studentId === originalId);
+    if (student) {
+      student.studentId = studentId; 
+      student.name = name; 
+      student.department = department;
+      state.attendance.forEach(a => { if (a.studentId === originalId) a.studentId = studentId; });
+    }
+  } else {
+    if (state.students.some(s => s.studentId.toLowerCase() === studentId.toLowerCase())) {
+      throw new Error("Student ID already exists.");
+    }
+    state.students.push({ studentId, name, department });
+  }
+  save();
+}
+
+function deleteStudent(studentId) {
+  if (!confirm(`Delete student ${studentId} and all their attendance records?`)) return;
+  state.students = state.students.filter(s => s.studentId !== studentId);
+  state.attendance = state.attendance.filter(a => a.studentId !== studentId);
+  if (activeHistoryStudentId === studentId) { 
+    $("historyPanel").classList.add("hidden"); 
+    activeHistoryStudentId = null; 
+  }
+  save(); 
+  showMessage("Student deleted."); 
+  render();
+}
+
+function startEditStudent(studentId) {
+  const student = state.students.find(s => s.studentId === studentId); 
+  if (!student) return;
+  $("editOriginalId").value = student.studentId; 
+  $("studentId").value = student.studentId;
+  $("studentName").value = student.name; 
+  $("department").value = student.department;
+  $("formTitle").textContent = "Edit Student"; 
+  $("submitBtn").textContent = "Update Student";
+  $("cancelEditBtn").classList.remove("hidden"); 
+  $("studentId").focus();
+}
+
+function resetForm() {
+  $("studentForm").reset(); 
+  $("editOriginalId").value = "";
+  $("formTitle").textContent = "Add Student"; 
+  $("submitBtn").textContent = "Add Student";
+  $("cancelEditBtn").classList.add("hidden");
+}
+
+function markAttendance(studentId, date, status) {
+  if (!date) throw new Error("Please select a valid date.");
+  const existing = state.attendance.find(a => a.studentId === studentId && a.date === date);
+  if (existing) {
+    throw new Error(`Attendance already recorded as '${existing.status}' for ${date}. Delete it from History to re-mark.`);
+  }
+  state.attendance.push({ studentId, date, status }); 
+  save();
+}
+
+function percentage(studentId) {
+  const rows = state.attendance.find(a => a.studentId === studentId && ["Present", "Absent"].includes(a.status));
+  const validRows = state.attendance.filter(a => a.studentId === studentId && ["Present", "Absent"].includes(a.status));
+  if (!validRows.length) return 0;
+  return Math.round(validRows.filter(a => a.status === "Present").length / validRows.length * 100);
+}
+
+function getStatusClass(status) {
+  if (status === "Present") return "status-present";
+  if (status === "Absent") return "status-absent";
+  if (status === "Late") return "status-late";
+  if (status === "Leave") return "status-leave";
+  return "";
+}
+
+function renderHistory(studentId) {
+  const student = state.students.find(s => s.studentId === studentId); 
+  if (!student) return;
+  activeHistoryStudentId = studentId;
+  $("historyTitle").textContent = `Attendance History: ${student.name} (${student.studentId})`;
+  
+  const records = state.attendance
+    .filter(a => a.studentId === studentId)
+    .sort((a, b) => b.date.localeCompare(a.date));
+    
+  $("historyRows").innerHTML = !records.length 
+    ? `<tr><td colspan="3">No attendance records found.</td></tr>` 
+    : records.map(r => `<tr>
+        <td>${escapeHTML(r.date)}</td>
+        <td class="${getStatusClass(r.status)}">${escapeHTML(r.status)}</td>
+        <td><button class="btn-danger btn-sm" data-del-date="${escapeHTML(r.date)}" data-del-id="${escapeHTML(r.studentId)}">Remove Record</button></td>
+      </tr>`).join("");
+      
+  $("historyPanel").classList.remove("hidden");
+}
+
+function render() {
+  const date = $("attendanceDate").value;
+  const q = $("search").value.toLowerCase().trim();
+  const statusFilter = $("statusFilter").value;
+  const threshold = Number($("threshold").value) || 75;
+  
+  const filteredStudents = state.students.filter(s => {
+    const matchesSearch = [s.studentId, s.name, s.department].join(" ").toLowerCase().includes(q);
+    const saved = state.attendance.find(a => a.studentId === s.studentId && a.date === date);
+    const currentStatus = saved ? saved.status : "Not marked";
+    return matchesSearch && (statusFilter === "All" || currentStatus === statusFilter);
+  });
+  
+  $("studentRows").innerHTML = !filteredStudents.length 
+    ? `<tr><td colspan="7">No matching student records found.</td></tr>` 
+    : filteredStudents.map(s => {
+        const saved = state.attendance.find(a => a.studentId === s.studentId && a.date === date);
+        const status = saved ? saved.status : "Not marked";
+        const pct = percentage(s.studentId);
+        const hasRecords = state.attendance.some(a => a.studentId === s.studentId && ["Present", "Absent"].includes(a.status));
+        const isLow = hasRecords && pct < threshold;
+        
+        return `<tr class="${isLow ? 'low-row' : ''}">
+          <td>${escapeHTML(s.studentId)}</td>
+          <td>${escapeHTML(s.name)}</td>
+          <td>${escapeHTML(s.department)}</td>
+          <td class="${isLow ? 'low' : 'status-present'}">${pct}% ${isLow ? '(Low)' : ''}</td>
+          <td class="${getStatusClass(status)}">${escapeHTML(status)}</td>
+          <td>
+            <button class="btn-present btn-sm" data-action="mark" data-id="${escapeHTML(s.studentId)}" data-status="Present">Present</button>
+            <button class="btn-absent btn-sm" data-action="mark" data-id="${escapeHTML(s.studentId)}" data-status="Absent">Absent</button>
+            <button class="btn-late btn-sm" data-action="mark" data-id="${escapeHTML(s.studentId)}" data-status="Late">Late</button>
+            <button class="btn-leave btn-sm" data-action="mark" data-id="${escapeHTML(s.studentId)}" data-status="Leave">Leave</button>
+          </td>
+          <td>
+            <button class="btn-secondary btn-sm" data-action="history" data-id="${escapeHTML(s.studentId)}">History</button>
+            <button class="btn-secondary btn-sm" data-action="edit" data-id="${escapeHTML(s.studentId)}">Edit</button>
+            <button class="btn-danger btn-sm" data-action="delete" data-id="${escapeHTML(s.studentId)}">Delete</button>
+          </td>
+        </tr>`;
+      }).join("");
+      
+  const todays = state.attendance.filter(a => a.date === date);
+  $("total").textContent = state.students.length;
+  $("present").textContent = todays.filter(a => a.status === "Present").length;
+  $("absent").textContent = todays.filter(a => a.status === "Absent").length;
+  
+  const percentages = state.students.map(s => percentage(s.studentId));
+  $("overall").textContent = percentages.length ? Math.round(percentages.reduce((a, b) => a + b, 0) / percentages.length) + "%" : "0%";
+  
+  if (activeHistoryStudentId) renderHistory(activeHistoryStudentId);
+}
+
+$("studentForm").addEventListener("submit", event => {
+  event.preventDefault();
+  try {
+    const origId = $("editOriginalId").value;
+    saveStudent(origId, $("studentId").value, $("studentName").value, $("department").value);
+    showMessage(origId ? "Student updated successfully." : "Student added successfully."); 
+    resetForm(); 
+    render();
+  } catch (error) { 
+    showMessage(error.message, true); 
+  }
+});
+
+$("cancelEditBtn").addEventListener("click", resetForm);
+
+$("studentRows").addEventListener("click", event => {
+  const button = event.target.closest("button[data-action]"); 
+  if (!button) return;
+  const { action, id, status } = button.dataset;
+  try {
+    if (action === "mark") { 
+      markAttendance(id, $("attendanceDate").value, status); 
+      showMessage(`Marked ${status} for ${id}.`); 
+      render(); 
+    }
+    else if (action === "edit") startEditStudent(id);
+    else if (action === "delete") deleteStudent(id);
+    else if (action === "history") renderHistory(id);
+  } catch (error) { 
+    showMessage(error.message, true); 
+  } 
+});
+
+$("historyRows").addEventListener("click", event => {
+  const button = event.target.closest("button[data-del-date]"); 
+  if (!button) return;
+  const { delId, delDate } = button.dataset;
+  state.attendance = state.attendance.filter(a => !(a.studentId === delId && a.date === delDate));
+  save(); 
+  showMessage(`Removed attendance record for ${delDate}.`); 
+  render();
+});
+
+$("closeHistoryBtn").addEventListener("click", () => { 
+  $("historyPanel").classList.add("hidden"); 
+  activeHistoryStudentId = null; 
+});
+
+$("search").addEventListener("input", render); 
+$("statusFilter").addEventListener("change", render);
+$("threshold").addEventListener("input", render); 
+$("attendanceDate").addEventListener("change", render);
+
+render();

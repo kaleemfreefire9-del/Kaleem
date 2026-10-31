@@ -19,4 +19,3 @@ This project is a web-based **Student Attendance Tracker** application built as 
 1. Clone or download this repository to your local machine.
 2. Ensure `index.html`, `style.css`, and `script.js` are in the same folder directory.
 3. Double-click `index.html` to open and run the application directly in any modern web browser.
-4. 
